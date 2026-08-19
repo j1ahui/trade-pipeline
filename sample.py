@@ -63,3 +63,83 @@ class Break:
     rule: str             # which reconciliation rule flagged this
     description: str
     severity: str = "warning"  # "warning" or "critical"
+
+"""
+SQLite-backed tick storage.
+
+Tier 1 keeps this deliberately simple: one table, one connection, no
+concurrency to worry about yet (that comes in Tier 2 when multiple
+worker processes write at once). The point right now is just: ticks
+go in, and you can query them back out with SQL or pandas.
+"""
+import sqlite3
+from pathlib import Path
+
+from domain.models import Tick
+
+DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "ticks.db"
+
+
+class TickStore:
+    def __init__(self, db_path: Path = DEFAULT_DB_PATH):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(self.db_path)
+        self._create_table()
+
+    def _create_table(self):
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ticks (
+                symbol TEXT NOT NULL,
+                price REAL NOT NULL,
+                size REAL NOT NULL,
+                timestamp TEXT NOT NULL,
+                received_at TEXT NOT NULL
+            )
+            """
+        )
+        # An index on (symbol, timestamp) is what makes "find the market
+        # price for BTC-USD around 10:00:03" fast instead of a full scan -
+        # exactly the query reconciliation will run constantly.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_symbol_time ON ticks(symbol, timestamp)"
+        )
+        self._conn.commit()
+
+    def write_tick(self, tick: Tick):
+        self._conn.execute(
+            "INSERT INTO ticks (symbol, price, size, timestamp, received_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                tick.symbol,
+                tick.price,
+                tick.size,
+                tick.timestamp.isoformat(),
+                tick.received_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def write_ticks(self, ticks: list[Tick]):
+        """Batch insert - useful once you're writing faster than one at a time."""
+        self._conn.executemany(
+            "INSERT INTO ticks (symbol, price, size, timestamp, received_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (t.symbol, t.price, t.size, t.timestamp.isoformat(), t.received_at.isoformat())
+                for t in ticks
+            ],
+        )
+        self._conn.commit()
+
+    def read_all_as_dataframe(self):
+        """Pull everything back out as a pandas DataFrame for reconciliation."""
+        import pandas as pd
+        return pd.read_sql_query(
+            "SELECT * FROM ticks ORDER BY timestamp", self._conn,
+            parse_dates=["timestamp", "received_at"],
+        )
+
+    def close(self):
+        self._conn.close()

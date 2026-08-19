@@ -143,3 +143,80 @@ class TickStore:
 
     def close(self):
         self._conn.close()
+
+"""
+A fake trade book.
+
+In real life this would be "the fills our trading desk actually made,"
+pulled from an execution system. We don't have a trading desk, so we
+simulate one: pick a few random moments and pretend we bought/sold at
+roughly the market price (with some fills intentionally off, so
+reconciliation has something to catch).
+"""
+import random
+import uuid
+from datetime import timedelta
+
+import pandas as pd
+
+from domain.models import Fill
+
+
+def simulate_fills(
+    ticks_df: pd.DataFrame,
+    n_fills: int = 20,
+    break_rate: float = 0.25,
+    seed: int | None = None,
+) -> list[Fill]:
+    """
+    Generate fake fills by sampling real ticks and perturbing some of them.
+
+    break_rate: fraction of fills that get deliberately corrupted (price
+    moved away from market, or timestamp shifted) so the reconciliation
+    suite has real breaks to find. Without this, every test run would
+    have nothing to report - not a useful demo.
+    """
+    rng = random.Random(seed)
+    if ticks_df.empty:
+        return []
+
+    sample = ticks_df.sample(n=min(n_fills, len(ticks_df)), random_state=seed)
+
+    fills = []
+    for _, row in sample.iterrows():
+        is_break = rng.random() < break_rate
+        price = row["price"]
+        timestamp = row["timestamp"]
+
+        if is_break:
+            # Nudge the price 2-5% away from the real market price at that
+            # moment - big enough that a "price drift" rule should catch it.
+            price = price * (1 + rng.choice([-1, 1]) * rng.uniform(0.02, 0.05))
+
+        fills.append(
+            Fill(
+                fill_id=str(uuid.uuid4())[:8],
+                symbol=row["symbol"],
+                price=round(price, 2),
+                size=round(rng.uniform(0.001, 0.5), 4),
+                side=rng.choice(["buy", "sell"]),
+                timestamp=timestamp,
+            )
+        )
+
+    # Also throw in a couple of fills with NO matching market data at all -
+    # this is the "unmatched fill" break case.
+    for _ in range(max(1, n_fills // 10)):
+        fills.append(
+            Fill(
+                fill_id=str(uuid.uuid4())[:8],
+                symbol=rng.choice(["BTC-USD", "ETH-USD"]),
+                price=round(rng.uniform(100, 100000), 2),
+                size=round(rng.uniform(0.001, 0.5), 4),
+                side=rng.choice(["buy", "sell"]),
+                # Timestamp way outside the range of ticks we actually have.
+                timestamp=ticks_df["timestamp"].min() - timedelta(hours=1),
+            )
+        )
+
+    return fills

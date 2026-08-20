@@ -220,3 +220,99 @@ def simulate_fills(
         )
 
     return fills
+
+"""
+Reconciliation rules.
+
+Tier 1 ships exactly one rule: "does this fill's price roughly match
+what the market was actually doing at that moment?" That single rule
+already covers the two most important break types:
+
+  - no market data near the fill at all  -> "unmatched fill"
+  - market data exists, but price is way off -> "price drift"
+
+Tier 2 will add more rules (tick sequence gaps, position-level drift).
+Keeping rules as small, independent functions is what makes the pytest
+suite in tests/ possible - each rule can be tested with made-up data,
+no live feed required.
+"""
+from datetime import timedelta
+
+import pandas as pd
+
+from domain.models import Fill, Break
+
+# How far around a fill's timestamp we'll look for matching market ticks.
+DEFAULT_WINDOW = timedelta(seconds=5)
+
+# How far a fill's price can drift from the nearest market price before
+# we flag it as a break, expressed as a fraction (0.01 = 1%).
+DEFAULT_PRICE_TOLERANCE = 0.01
+
+
+def check_fill_against_market(
+    fill: Fill,
+    ticks_df: pd.DataFrame,
+    window: timedelta = DEFAULT_WINDOW,
+    price_tolerance: float = DEFAULT_PRICE_TOLERANCE,
+) -> Break | None:
+    """
+    Check a single fill against market ticks for the same symbol.
+
+    Returns a Break if something's wrong, or None if the fill looks fine.
+    This is the function the pytest suite targets directly - no need to
+    spin up a whole pipeline to test reconciliation logic.
+    """
+    window_start = fill.timestamp - window
+    window_end = fill.timestamp + window
+
+    nearby = ticks_df[
+        (ticks_df["symbol"] == fill.symbol)
+        & (ticks_df["timestamp"] >= window_start)
+        & (ticks_df["timestamp"] <= window_end)
+    ]
+
+    if nearby.empty:
+        return Break(
+            fill_id=fill.fill_id,
+            rule="unmatched_fill",
+            description=(
+                f"No market ticks for {fill.symbol} within "
+                f"{window.total_seconds():.0f}s of fill at {fill.timestamp}"
+            ),
+            severity="critical",
+        )
+
+    # Compare against the nearest tick in time, not just any tick in the
+    # window - that's the closest thing we have to "what was the market
+    # doing at the instant of this fill."
+    nearby = nearby.copy()
+    nearby["time_delta"] = (nearby["timestamp"] - fill.timestamp).abs()
+    closest = nearby.loc[nearby["time_delta"].idxmin()]
+
+    market_price = closest["price"]
+    pct_diff = abs(fill.price - market_price) / market_price
+
+    if pct_diff > price_tolerance:
+        return Break(
+            fill_id=fill.fill_id,
+            rule="price_drift",
+            description=(
+                f"Fill price {fill.price} for {fill.symbol} is "
+                f"{pct_diff:.2%} away from market price {market_price:.2f} "
+                f"at {closest['timestamp']}"
+            ),
+            severity="warning",
+        )
+
+    return None
+
+
+def reconcile_all(fills: list[Fill], ticks_df: pd.DataFrame) -> list[Break]:
+    """Run every fill through the rule set, return only the breaks found."""
+    breaks = []
+    for fill in fills:
+        result = check_fill_against_market(fill, ticks_df)
+        if result is not None:
+            breaks.append(result)
+    return breaks

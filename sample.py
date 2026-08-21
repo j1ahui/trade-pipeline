@@ -316,3 +316,107 @@ def reconcile_all(fills: list[Fill], ticks_df: pd.DataFrame) -> list[Break]:
         if result is not None:
             breaks.append(result)
     return breaks
+
+"""
+Tests for the reconciliation rules.
+
+Notice none of these tests touch the network or a live feed - that's
+the whole point. Reconciliation logic is pure: given some ticks and a
+fill, does it flag correctly? We build tiny fake DataFrames by hand so
+the tests are fast and deterministic.
+"""
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+import pytest
+
+from domain.models import Fill
+from reconciliation.rules import check_fill_against_market
+
+
+def make_ticks_df(rows):
+    """Helper: build a minimal ticks DataFrame from (symbol, price, timestamp) tuples."""
+    return pd.DataFrame(
+        [{"symbol": s, "price": p, "timestamp": t} for s, p, t in rows]
+    )
+
+
+BASE_TIME = datetime(2026, 8, 12, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def test_fill_matching_market_price_has_no_break():
+    ticks = make_ticks_df([
+        ("BTC-USD", 68000.0, BASE_TIME),
+        ("BTC-USD", 68010.0, BASE_TIME + timedelta(seconds=1)),
+    ])
+    fill = Fill("f1", "BTC-USD", 68005.0, 0.1, "buy", BASE_TIME + timedelta(seconds=1))
+
+    result = check_fill_against_market(fill, ticks)
+
+    assert result is None
+
+
+def test_fill_with_no_nearby_ticks_is_unmatched():
+    ticks = make_ticks_df([
+        ("BTC-USD", 68000.0, BASE_TIME),
+    ])
+    # Fill happens an hour later - way outside the default 5s window.
+    fill = Fill("f2", "BTC-USD", 68000.0, 0.1, "buy", BASE_TIME + timedelta(hours=1))
+
+    result = check_fill_against_market(fill, ticks)
+
+    assert result is not None
+    assert result.rule == "unmatched_fill"
+    assert result.severity == "critical"
+
+
+def test_fill_with_price_far_from_market_is_price_drift():
+    ticks = make_ticks_df([
+        ("BTC-USD", 68000.0, BASE_TIME),
+    ])
+    # 5% above market - default tolerance is 1%, so this should trip.
+    fill = Fill("f3", "BTC-USD", 71400.0, 0.1, "buy", BASE_TIME)
+
+    result = check_fill_against_market(fill, ticks)
+
+    assert result is not None
+    assert result.rule == "price_drift"
+    assert result.severity == "warning"
+
+
+def test_fill_within_tolerance_has_no_break():
+    ticks = make_ticks_df([
+        ("BTC-USD", 68000.0, BASE_TIME),
+    ])
+    # 0.5% above market - under the 1% tolerance, should pass.
+    fill = Fill("f4", "BTC-USD", 68340.0, 0.1, "buy", BASE_TIME)
+
+    result = check_fill_against_market(fill, ticks)
+
+    assert result is None
+
+
+def test_only_matches_same_symbol():
+    ticks = make_ticks_df([
+        ("ETH-USD", 68000.0, BASE_TIME),  # same price, WRONG symbol
+    ])
+    fill = Fill("f5", "BTC-USD", 68000.0, 0.1, "buy", BASE_TIME)
+
+    result = check_fill_against_market(fill, ticks)
+
+    # No BTC-USD ticks exist, so this should be unmatched, not a false match.
+    assert result is not None
+    assert result.rule == "unmatched_fill"
+
+
+@pytest.mark.parametrize("tolerance,expect_break", [
+    (0.001, True),   # very strict - 0.5% diff should trip
+    (0.05, False),   # very loose - 0.5% diff should pass
+])
+def test_price_tolerance_is_configurable(tolerance, expect_break):
+    ticks = make_ticks_df([("BTC-USD", 68000.0, BASE_TIME)])
+    fill = Fill("f6", "BTC-USD", 68340.0, 0.1, "buy", BASE_TIME)  # 0.5% off
+
+    result = check_fill_against_market(fill, ticks, price_tolerance=tolerance)
+
+    assert (result is not None) == expect_break

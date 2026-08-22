@@ -98,4 +98,4 @@ def test_price_tolerance_is_configurable(tolerance, expect_break):      # passes
 
     result = check_fill_against_market(fill, ticks, price_tolerance=tolerance)
 
-    assert (result is not None) == expect_break         
+    assert (result is not None) == expect_break         # compares against pytest values

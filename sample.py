@@ -420,3 +420,81 @@ def test_price_tolerance_is_configurable(tolerance, expect_break):
     result = check_fill_against_market(fill, ticks, price_tolerance=tolerance)
 
     assert (result is not None) == expect_break
+
+
+"""
+Async ingest from Coinbase's public WebSocket feed.
+
+This is the piece that proves "non-blocking ingest of a live streaming
+feed." No auth needed for market data - Coinbase's ticker channel is
+public. We connect once, subscribe to a few products, and yield a
+Tick object every time a trade prints.
+"""
+import asyncio
+import json
+import logging
+from typing import AsyncIterator, Sequence
+
+import websockets
+
+from domain.models import Tick
+
+logger = logging.getLogger(__name__)
+
+COINBASE_WS_URL = "wss://ws-feed.exchange.coinbase.com"
+
+
+async def stream_ticks(symbols: Sequence[str]) -> AsyncIterator[Tick]:
+    """
+    Connect to Coinbase, subscribe to the ticker channel for the given
+    symbols, and yield a normalized Tick for every trade that prints.
+
+    This is an async generator: callers do `async for tick in stream_ticks(...)`.
+    That's the asyncio idiom for "give me items as they arrive, don't
+    block the rest of the program while waiting."
+    """
+    subscribe_msg = {
+        "type": "subscribe",
+        "product_ids": list(symbols),
+        "channels": ["ticker"],
+    }
+
+    async with websockets.connect(COINBASE_WS_URL) as ws:
+        await ws.send(json.dumps(subscribe_msg))                # converting a python dict into json
+        logger.info("Subscribed to ticker channel for %s", symbols)
+
+        async for raw_message in ws:
+            msg = json.loads(raw_message)           # converting json received from coinbase to python dict 
+
+            # Coinbase sends a few message types on this channel:
+            # "subscriptions" (ack), "ticker" (the actual trades we want),
+            # and occasionally error messages. We only care about ticker.
+            if msg.get("type") != "ticker":
+                continue
+
+            # Some ticker messages arrive before a trade has actually
+            # happened (e.g. an initial snapshot) and won't have a price.
+            # Skip anything malformed rather than crashing the pipeline.
+            try:
+                yield Tick.from_coinbase_ticker(msg)
+            except (KeyError, ValueError) as e:
+                logger.warning("Skipping malformed ticker message: %s", e)
+                continue
+
+
+async def _demo():
+    """Quick manual test: print ticks for 15 seconds then stop."""
+    logging.basicConfig(level=logging.INFO)
+
+    async def _run():
+        async for tick in stream_ticks(["BTC-USD", "ETH-USD"]):         # stream_ticks(["BTC-USD", "ETH-USD"]) is producing ticks. async for tick in = consuming ticks
+            print(tick)
+
+    try:
+        await asyncio.wait_for(_run(), timeout=15)
+    except asyncio.TimeoutError:
+        print("\nDemo finished (15s elapsed).")
+
+
+if __name__ == "__main__":
+    asyncio.run(_demo())

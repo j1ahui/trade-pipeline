@@ -57,15 +57,15 @@ async def _demo():
     """
     logging.basicConfig(level=logging.INFO)             # show info messages
 
-    async def _run():
+    async def _run():                                   # returns a coroutine object repping the work _run() is supposed to perform
         async for tick in stream_ticks(["BTC-USD", "ETH-USD"]):     # stream_ticks(["BTC-USD", "ETH-USD"]) is producing ticks. async for tick in = consuming ticks
             print(tick)
 
     try:
-        await asyncio.wait_for(_run(), timeout=15)
+        await asyncio.wait_for(_run(), timeout=15)      # calling .wait_for(). asyncio.wait_for(_run(), timeout=15) = returns an awaitable (awaitable = something that can be used with await)
     except asyncio.TimeoutError:
         print("\nDemo finished (15s elapsed).")
 
 
 if __name__ == "__main__":
-    asyncio.run(_demo())
+    asyncio.run(_demo())                # runs on main file (this file) as its being executed as the main module 

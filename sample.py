@@ -583,3 +583,97 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+"""
+Redis Streams queue layer.
+
+This is the boundary the JD calls out specifically: "a message queue -
+the boundary that makes this distributed instead of one script." Before
+Tier 2, ingest wrote directly to SQLite. Now ingest only knows how to
+publish a Tick onto a stream, and workers only know how to read from
+it - neither side knows the other exists. That's what lets you scale
+producers and consumers independently, and it's why swapping this for
+Kafka later wouldn't require touching ingest or storage at all.
+
+Consumer groups (not plain XREAD) are used deliberately: a group lets
+multiple worker processes split the same stream between them instead of
+each worker seeing every message, and it gives each message an
+explicit ack step - if a worker dies mid-processing, the message stays
+"pending" and can be claimed by another worker instead of being lost.
+"""
+import logging
+
+import redis
+
+from domain.models import Tick
+
+logger = logging.getLogger(__name__)
+
+STREAM_NAME = "ticks_stream"
+GROUP_NAME = "tick_workers"
+
+# Cap the stream length so it doesn't grow forever if workers fall
+# behind - Tier 3's load harness is exactly the tool that will tell us
+# whether this cap is being hit.
+MAX_STREAM_LENGTH = 100_000
+
+
+def get_redis_client(host: str = "localhost", port: int = 6379) -> redis.Redis:
+    """One place to build a Redis connection, so config lives in one spot."""
+    return redis.Redis(host=host, port=port, decode_responses=True)
+
+
+def publish_tick(client: redis.Redis, tick: Tick):
+    """Publish one Tick onto the stream. Called from the async ingest side."""
+    client.xadd(
+        STREAM_NAME,
+        tick.to_redis_fields(),
+        maxlen=MAX_STREAM_LENGTH,
+        approximate=True,  # exact trimming is expensive; approximate is fine here
+    )
+
+
+def ensure_consumer_group(client: redis.Redis):
+    """
+    Create the consumer group if it doesn't exist yet.
+
+    mkstream=True means this also creates the stream itself if no ticks
+    have been published yet - lets workers start up before ingest does
+    without erroring.
+    """
+    try:
+        client.xgroup_create(STREAM_NAME, GROUP_NAME, id="0", mkstream=True)
+        logger.info("Created consumer group '%s' on stream '%s'", GROUP_NAME, STREAM_NAME)
+    except redis.exceptions.ResponseError as e:
+        if "BUSYGROUP" in str(e):
+            # Group already exists - fine, another worker (or a previous
+            # run) already created it.
+            pass
+        else:
+            raise
+
+
+def read_batch(client: redis.Redis, consumer_name: str, count: int = 10, block_ms: int = 2000):
+    """
+    Read up to `count` new messages for this consumer within the group.
+
+    Returns a list of (message_id, Tick) pairs. Blocks up to block_ms
+    waiting for messages if none are immediately available - this is
+    what lets a worker sit idle without busy-looping the CPU.
+    """
+    response = client.xreadgroup(
+        GROUP_NAME, consumer_name, {STREAM_NAME: ">"}, count=count, block=block_ms
+    )
+
+    if not response:
+        return []
+
+    # response shape: [(stream_name, [(message_id, fields_dict), ...])]
+    _, messages = response[0]
+    return [(msg_id, Tick.from_redis_fields(fields)) for msg_id, fields in messages]
+
+
+def ack(client: redis.Redis, message_id: str):
+    """Acknowledge a message as processed, removing it from the pending list."""
+    client.xack(STREAM_NAME, GROUP_NAME, message_id)

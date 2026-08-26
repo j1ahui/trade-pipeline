@@ -60,7 +60,7 @@ def check_fill_against_market(
         return Break(
             fill_id=fill.fill_id,
             rule="price_drift",
-            description=(f"Fill price {fill.price} for {fill.symbol} is" f"{pct_diff:.2%} away from market price {market_price:.2f}" f"at {closest['timestamp']}"),
+            description=(f"Fill price {fill.price} for {fill.symbol} is " f"{pct_diff:.2%} away from market price {market_price:.2f}"  f"at {closest['timestamp']}"),
             severity="warning"
         )
 

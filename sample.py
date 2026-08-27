@@ -677,3 +677,4 @@ def read_batch(client: redis.Redis, consumer_name: str, count: int = 10, block_m
 def ack(client: redis.Redis, message_id: str):
     """Acknowledge a message as processed, removing it from the pending list."""
     client.xack(STREAM_NAME, GROUP_NAME, message_id)
+

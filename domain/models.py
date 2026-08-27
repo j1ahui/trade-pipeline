@@ -39,6 +39,35 @@ class Tick :
             timestamp=datetime.fromisoformat(msg["time"].replace("Z", "+00:00")),
             received_at=datetime.now(timezone.utc),                 # .utc = in UTC
         )
+    
+    def to_redis_fields(self) -> dict:
+        """
+        Serialize to flat string dict Redis Streams needs (XADD only accepts fields -> string/bytes, no nested types).
+        Mirrors from_coinbase_ticker (knows wire format (structure used when data is sent between systems)).
+        """
+        return {
+            "symbol": self.symbol,
+            "price": str(self.price),
+            "size": str(self.size),
+            "timestamp": self.timestamp.isoformat(),
+            "received_at": self.timestamp.isoformat(),
+        }
+    
+
+    @classmethod
+    def from_redis_fields(cls, fields: dict) -> "Tick":
+        """
+        Reverse of to_redis_fields.
+        Rebuild a typed Tick from stream fields.
+        """
+        return cls(
+            symbol=fields["price"],
+            price=float(fields["price"]),
+            size=float(fields["size"]),
+            timestamp=datetime.fromisoformat(fields["timestamp"]),
+            received_at=datetime.fromisoformat(fields["received_at"]),
+
+        )
 
 
 @dataclass(frozen=True)

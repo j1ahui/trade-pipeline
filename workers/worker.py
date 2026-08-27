@@ -80,7 +80,7 @@ def stop_workers(processes: list[multiprocessing.Process], stop_event: multiproc
     stop_event.set()
 
     for p in processes:
-        p.join(timeout=timeout)
+        p.join(timeout=timeout)         # join = join back to main process
         if p.is_alive():
             logger.warning("Worker %s did not exit cleanly, terminating", p.name)               # name property is a Process class attribute
             p.terminate()

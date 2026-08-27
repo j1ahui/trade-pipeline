@@ -15,8 +15,9 @@ DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "ticks.db"            
 class TickStore:
     def __init__(self, db_path: Path = DEFAULT_DB_PATH):        # type hint. also gives db_path a default value (can be overriden)
         self.db_path = db_path                                  # self.db_path points to data/ticks.db
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)              # opens a connection. self._conn points to connection to database (ticks.db). use self._conn to tell sqlite to run sql against ticks.db database
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)  # creates "data" (parent directory of ticks.db) if it doesnt exist
+        self._conn = sqlite3.connect(self.db_path, timeout=30)  # opens a connection. self._conn points to connection to database (ticks.db). use self._conn to tell sqlite to run sql against ticks.db database
+        self._conn.execute("PRAGMA journal_mode=WAL")           # WAL = write-ahead logging. PRAGMA = SQLites way of accessing/configuring data-base specific settings 
         self._create_table()
 
     def _create_table(self):

@@ -52,7 +52,7 @@ def ensure_consumer_groups(client: redis.Redis):
             raise
 
 
-def read_batch(client: redis.Redis, consumer_name: str, count: int=10, block_ms: int=2000):                 # block_ms = if there are no messages available rn, wait up to 2ms (2000), for a new message to arrive 
+def read_batch(client: redis.Redis, consumer_name: str, count: int=10, block_ms: int=2000):                 # block_ms = if there are no messages available rn, wait up to 2ms (2000), for a new message to arrive. consumer_name identifies a particular worker
     """
     Read up to 'count' messages for this consumer within the group.
     Return a list of (message_id, Tick) pairs. 

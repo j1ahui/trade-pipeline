@@ -678,3 +678,97 @@ def ack(client: redis.Redis, message_id: str):
     """Acknowledge a message as processed, removing it from the pending list."""
     client.xack(STREAM_NAME, GROUP_NAME, message_id)
 
+"""
+Worker processes.
+
+Each worker is a standalone process (not a thread - real multiprocessing,
+each with its own Python interpreter and no shared memory) that pulls
+ticks off the Redis stream and writes them to SQLite. This is the piece
+that proves "distributed" rather than "one script with an async loop":
+you can run 1 worker or 10, and the queue is what makes that a config
+change instead of a rewrite.
+
+A worker doesn't know or care that ingest is written with asyncio, or
+that there's a WebSocket involved at all - it only speaks the queue's
+language (read a batch, write it, ack it). That decoupling is the point.
+"""
+import logging
+import multiprocessing
+
+from mq.redis_stream import get_redis_client, ensure_consumer_group, read_batch, ack
+from storage.sqlite_store import TickStore
+
+logger = logging.getLogger(__name__)
+
+
+def run_worker(worker_id: int, stop_event: multiprocessing.Event, redis_host: str = "localhost"):
+    """
+    The function each worker process runs. Loops reading batches from the
+    stream, writing them to storage, and acking, until told to stop.
+
+    stop_event is a multiprocessing.Event - the standard way to signal
+    "shut down" across process boundaries, since worker processes don't
+    share memory with the parent and can't just check a regular variable.
+    """
+    consumer_name = f"worker-{worker_id}"
+    logging.basicConfig(level=logging.INFO, format=f"%(asctime)s [worker-{worker_id}] %(message)s")
+
+    client = get_redis_client(host=redis_host)
+    ensure_consumer_group(client)
+    store = TickStore()  # each worker opens its own SQLite connection
+
+    written = 0
+    logger.info("Worker %d started, consumer name '%s'", worker_id, consumer_name)
+
+    try:
+        while not stop_event.is_set():
+            # block_ms=1000 means: wait up to 1s for new messages, then
+            # loop back around and check stop_event again. Without this
+            # periodic wake-up, a worker could block forever past when
+            # it was told to stop.
+            batch = read_batch(client, consumer_name, count=10, block_ms=1000)
+
+            if not batch:
+                continue
+
+            for message_id, tick in batch:
+                store.write_tick(tick)
+                ack(client, message_id)
+                written += 1
+
+            if written % 50 < len(batch):
+                logger.info("Written %d ticks so far", written)
+    finally:
+        store.close()
+        logger.info("Worker %d shutting down, wrote %d ticks total", worker_id, written)
+
+
+def spawn_workers(n_workers: int, redis_host: str = "localhost"):
+    """
+    Start n_workers worker processes and return (processes, stop_event).
+
+    Caller is responsible for calling stop_event.set() and then joining
+    the processes when it's time to shut down - see main.py.
+    """
+    stop_event = multiprocessing.Event()                # creating event object. each worker is intended to be a separate python process
+    processes = []
+
+    for worker_id in range(n_workers):
+        p = multiprocessing.Process(
+            target=run_worker, args=(worker_id, stop_event, redis_host), daemon=False
+        )
+        p.start()
+        processes.append(p)
+
+    return processes, stop_event
+
+
+def stop_workers(processes: list[multiprocessing.Process], stop_event: multiprocessing.Event, timeout: int = 5):
+    """Signal all workers to stop and wait for them to exit cleanly."""
+    stop_event.set()
+    for p in processes:
+        p.join(timeout=timeout)
+        if p.is_alive():
+            logger.warning("Worker %s did not exit cleanly, terminating", p.name)
+            p.terminate()
+

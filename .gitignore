@@ -1,0 +1,25 @@
+# --- runtime-generated data ---
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# --- virtual environments ---
+venv/
+.venv/
+env/
+
+# --- secrets / local config ---
+.env
+
+# --- editor/OS cruft ---
+.vscode/
+.idea/
+.DS_Store
+
+sample.py

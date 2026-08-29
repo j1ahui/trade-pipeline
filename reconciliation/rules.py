@@ -126,6 +126,8 @@ def check_position_drift(fills: list[Fill], max_position: float = DEFAULT_MAX_PO
                     severity="critical",
             )
         )
+            
+    return breaks
 
 
 def reconcile_all(fills: list[Fill], ticks_df: pd.DataFrame, max_gap: timedelta = DEFAULT_MAX_GAP, max_position: float = DEFAULT_MAX_POSITION,) -> list[Break]:

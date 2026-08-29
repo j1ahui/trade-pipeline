@@ -50,7 +50,7 @@ class Tick :
             "price": str(self.price),
             "size": str(self.size),
             "timestamp": self.timestamp.isoformat(),
-            "received_at": self.timestamp.isoformat(),
+            "received_at": self.received_at.isoformat(),
         }
     
 
@@ -61,7 +61,7 @@ class Tick :
         Rebuild a typed Tick from stream fields.
         """
         return cls(
-            symbol=fields["price"],
+            symbol=fields["symbol"],
             price=float(fields["price"]),
             size=float(fields["size"]),
             timestamp=datetime.fromisoformat(fields["timestamp"]),

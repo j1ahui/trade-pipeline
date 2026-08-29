@@ -7,12 +7,20 @@ Flow: connect to the live feed, normalise ticks, write to SQLite (after collecti
 Run it directly: python3 main.py 
 
 By default, it listens for 30s before moving to reconciliation (adjust LISTEN_SECONDS below if you want more data before reconciling).
+
+Tier 2 entry point.
+
+Flow: spawn N workers processes, run the async producer (which streams live ticks) and publishes them to Redis, stop the 
+      workers once the producer finishes, simulate fills, reconcile what workers wrote to SQLite.
 """
 
 import asyncio
 import logging
+import time
 
 from ingest.coinbase_ws import stream_ticks
+from ingest.producer import run_producer
+from workers.worker import spawn_workers, stop_workers
 from storage.sqlite_store import TickStore
 from reconciliation.trade_book import simulate_fills
 from reconciliation.rules import reconcile_all
@@ -22,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 SYMBOLS = ["BTC-USD", "ETH-USD"]
 LISTEN_SECONDS = 30
+N_WORKERS = 3
+WORKER_DRAIN_SECONDS = 3        # give workers a moment to finish last batch
 
 
 async def collect_ticks(store: TickStore, seconds: int):        # expecting a TickStore object
@@ -66,16 +76,34 @@ def run_reconciliation(store: TickStore):
     if not breaks:
         print("No breaks found. All files reconciled cleanly.")
     else:
+        by_rule = {}
         for b in breaks:
-            print(f"[{b.severity.upper():8}] {b.rule:15} fill={b.fill_id} {b.description}")
+            by_rule.setdefault(b.rule, []).append(b)
+        for rule, rule_breaks in by_rule.items():
+            print(f"\n{rule} ({len(rule_breaks)}):")
+            for b in rule_breaks:
+                print(f"[{b.severity.upper():8}] {b.rule:15} fill={b.fill_id} {b.description}")
 
     print("=" * 60 + "\n")
 
 async def main():
-    store = TickStore()
+    logger.info("Spawning %d worker processes...", N_WORKERS)
+    processes, stop_event = spawn_workers(N_WORKERS)
+
+    time.sleep(1)           # give workers a moment to create the consumer group before the producer starts publishing (no early ticks land before the group exists)
+
     try: 
         logger.info("Listening to live feed for %ds...", LISTEN_SECONDS)
-        await collect_ticks(store, LISTEN_SECONDS)
+        published = await run_producer(SYMBOLS, LISTEN_SECONDS)
+        logger.info("Producer published %d ticks. Draining workers...", published)
+        time.sleep(WORKER_DRAIN_SECONDS)
+
+    finally:
+        stop_workers(processes, stop_event)
+        logger.info("All workers have stopped.")
+
+    store = TickStore()
+    try:
         run_reconciliation(store)
     finally:
         store.close()

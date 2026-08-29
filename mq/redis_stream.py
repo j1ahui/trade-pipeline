@@ -22,7 +22,7 @@ def get_redis_client(host: str = "localhost", port: int = 6379) -> redis.Redis: 
     """
     One place to build a Redis connection (config lives in one spot).
     """
-    return redis.Redis(host=host, port=port, decode_response=True)              # creating redis client object, providing communication methods with Redis server
+    return redis.Redis(host=host, port=port, decode_responses=True)              # creating redis client object, providing communication methods with Redis server
 
 
 def publish_tick(client: redis.Redis, tick: Tick):

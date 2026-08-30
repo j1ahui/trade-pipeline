@@ -17,7 +17,7 @@ from domain.models import Tick
 DEFAULT_START_PRICES = {"BTC-USD": 68000.0, "ETH-USD": 3000.0}
 
 
-def generate_synthetic_ticks(n_per_symbol: int, symbols: tuple = ("BTC-USD", "ETH-USD"), seed: int | None = None,) -> list[Tick]:
+def generate_synthetic_ticks(n_per_symbol: int, symbols: tuple = ("BTC-USD", "ETH-USD"), seed: int | None = None,) -> list[Tick]:       #n_per_symbol = objects per symbol
     """
     Generate n_per_symbol ticks for each symbol via a simple random walk around a starting price, then shuffle so symbols
     interleave the way a real feed would. 
@@ -27,9 +27,9 @@ def generate_synthetic_ticks(n_per_symbol: int, symbols: tuple = ("BTC-USD", "ET
 
     ticks = []
     for symbol in symbols:
-        price = DEFAULT_START_PRICES.get(symbol, 100.0)
+        price = DEFAULT_START_PRICES.get(symbol, 100.0)         
         for i in range(n_per_symbol):
-            price = max(price + rng.uniform(-5, 5), 1.0)
+            price = max(price + rng.uniform(-5, 5), 1.0)            # price can not go below 1.0
             ts = now + timedelta(milliseconds=i * 50)
             ticks.append(
                 Tick(

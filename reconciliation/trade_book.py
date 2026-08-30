@@ -42,7 +42,7 @@ def simulate_fills(
         timestamp = row["timestamp"]            # get timestamp from current row 
 
         if is_break:
-            price = price * (1 + rng.choice([-1, 1]) * rng.uniform(0.02, 0.05))     # choice() = randomly chooses from provided list. [-1, 1] to decide whether price moves up or down. uniform() = generates random decimal between 0.02 and 0.05 (choosing a price adjustment between 2% and 5%). (essentiallu creates fills)
+            price = price * (1 + rng.choice([-1, 1]) * rng.uniform(0.02, 0.05))     # choice() = randomly chooses from provided list. [-1, 1] to decide whether price moves up or down. uniform() = generates random decimal between 0.02 and 0.05 (choosing a price adjustment between 2% and 5%). (essentially creates fills)
 
         fills.append(
             Fill(                               # creating fill instance (constructs an object of type Fill)

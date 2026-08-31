@@ -83,6 +83,57 @@ def detect_fell_behind(pendings: list[int], growth_ratio: float = 15.0, min_pend
     
     mid = len(pendings) // 2
     first_half_avg = sum(pendings[:mid]) / mid
-    second_half_avg = sum(pendings[mid:]) / len(pendings) - mid
+    second_half_avg = sum(pendings[mid:]) / (len(pendings) - mid)
 
     return second_half_avg > first_half_avg * growth_ratio and second_half_avg > min_pending
+
+
+def run_rate_at_step(client, ticks: list, target_rate: float, duration_sec: float, sample_interval: float = 0.5) -> RateStepResult:
+    """
+    Run one load test step at a fixed target rate, sampling backlog throughout.
+    """
+    samples = []                                # pass this list into run_rate_step(). shared list that _monitor_backlog() fills, run_rate_step() reads
+    stop_event = threading.Event()
+    monitor = threading.Thread(                 # creating thread object whose job will be to run _monitor_backlog() aka watch redis backlog
+        target=_monitor_backlog, args=(client, stop_event, samples, sample_interval), daemon=True
+    )
+    monitor.start()                             # starts executing _monitor_backlog() in separate thread
+
+    published, actual_rate, elapsed = replay_at_rate(client, ticks, target_rate, duration_sec)
+
+    time.sleep(sample_interval)             # one more sample after publishing stops to catch any trailing backlog workers that havent drained yet before we shut monitor down
+    stop_event.set()
+    monitor.join(timeout=2)
+
+    queue_depths = [s["queue_depth"] for s in samples] or [0]
+    pendings = [s["pending"] for s in samples] or [0]
+
+    return RateStepResult(
+        target_rate=target_rate,
+        duration_sec=elapsed,
+        published=published,
+        actual_rate=actual_rate,
+        max_queue_depth=max(queue_depths),
+        max_pending=max(pendings),
+        avg_pending=sum(pendings) / len(pendings),
+        fell_behind=detect_fell_behind(pendings),
+    )
+
+
+def run_load_test(rates: list[float], duration_per_rate: float = 8.0, redis_host: str = "localhost") -> list[RateStepResult]:
+    """
+    Step through each target rate in order, running run_rate_at_step for each and collecting results.
+    """
+    from load_test.tick_generator import generate_synthetic_ticks
+
+    client = get_redis_client(host=redis_host)
+    ticks = generate_synthetic_ticks(2000, seed=7)
+
+    results = []
+    for rate in rates:
+        logger.info("Load step: target= %s msgs/sec for %ss", rate, duration_per_rate)
+        result = run_rate_at_step(client, ticks, rate, duration_per_rate)
+        results.append(result)
+        logger.info("Published= %d, actual=%.1f/s max_pending=%d fell_behind=%s", result.published, result.actual_rate, result.max_pending, result.fell_behind,)
+
+    return results

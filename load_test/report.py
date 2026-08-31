@@ -42,7 +42,15 @@ def print_summary(results: list):
         print(f"\nPipeline kept up at every tested rate, up to {df["target_rate"].max():.0f} msgs/sec. \n")
 
 
-def save_report(results: list, filename: str = "load_test_chart.png"):
+def save_report(results: list, filename: str = "load_test_report.csv") -> Path:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = REPORTS_DIR / filename
+    results_to_dataframe(results).to_csv(path, index=False)                 # to_csv() is pandas df method. it takes df and writes it to a csv file. saves df to location stored in path
+    logger.info("Saved load test report to %s", path)
+    return path
+
+
+def save_chart(results: list, filename: str = "load_test_chart.png"):
     """
     Renders a PNG chart 
     """
